@@ -1,0 +1,6 @@
+# Dépendance Python de haut niveau réellement importée par le code.
+# faster-whisper installe ses propres dépendances (ctranslate2, av,
+# onnxruntime, tokenizers, huggingface-hub, numpy…).
+# Ollama et Groq sont appelés via leur API HTTP (urllib, stdlib) :
+# aucune bibliothèque Python supplémentaire n'est nécessaire.
+faster-whisper>=1.2

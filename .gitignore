@@ -22,7 +22,6 @@ __pycache__/
 # Fichiers sauvegardés par link-dev.sh côté installation
 *.orig
 
-# Réglages d'éditeur / d'outils locaux
-.claude/
+# Réglages d'éditeur locaux
 .vscode/
 .idea/
