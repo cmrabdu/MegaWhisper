@@ -27,7 +27,9 @@ en option, avec **repli automatique** vers le moteur local en cas d'échec.
 - [Installation](#installation)
 - [Utilisation](#utilisation)
 - [Les modes](#les-modes)
+- [Cloud (Groq) — optionnel mais rapide](#cloud-groq--optionnel-mais-rapide)
 - [Configuration](#configuration)
+- [Journal de performance](#journal-de-performance)
 - [Développement](#développement)
 - [Licence](#licence)
 
@@ -36,7 +38,11 @@ en option, avec **repli automatique** vers le moteur local en cas d'échec.
 - **Local et privé** — l'audio et la transcription restent sur votre machine ; rien n'est envoyé sur le réseau (sauf si vous activez explicitement le moteur cloud Groq).
 - **Trois modes** — *Brut* (texte tel quel), *Propre* (correction des fautes et des mots mal transcrits d'après le contexte) et *Prompt* (reformulation en prompt clair pour une IA).
 - **Whisper + Ollama** — transcription par faster-whisper, post-traitement optionnel par un modèle local via Ollama (`qwen3.5:4b` par défaut).
-- **Option cloud Groq** — transcription distante rapide et précise (`whisper-large-v3-turbo`), avec repli automatique vers le local si la clé manque ou que l'appel échoue.
+- **Moteurs cloud Groq (optionnels, rapides)** — la transcription peut passer par Groq `whisper-large-v3-turbo` et la correction IA par Groq `llama-3.1-8b-instant` : la dictée est prête en ~1-2 s au lieu de dizaines de secondes en local. **Repli automatique** vers le local (faster-whisper + Ollama) si le cloud échoue ou que la clé manque. Réglé par `transcribe_backend` (`local` / `groq`) et `llm_backend` (`ollama` / `groq`).
+- **Compression Opus avant l'envoi cloud** — l'audio est transcodé en Opus via `ffmpeg` avant l'upload (~15× plus léger), ce qui rend la transcription des longues dictées rapide et fiable. Repli sur le WAV brut si `ffmpeg` est absent ; réessais automatiques sur erreurs réseau transitoires.
+- **Vocabulaire & remplacements** — une liste de jargon (`vocabulary`) est imposée au modèle de transcription via *hotwords*, et une table de remplacements littéraux (`replacements`, ex. `k8s` → `Kubernetes`) est appliquée après transcription.
+- **Injection de contexte** — un court extrait du presse-papier (et le titre de la fenêtre active sous Sway / Hyprland) guide la transcription **en local uniquement** ; cet indice n'est **jamais** envoyé au cloud, par souci de confidentialité.
+- **Journal de performance** — chaque dictée écrit une ligne dans `timings.log` (durée de parole, temps de transcription, temps d'IA, total, moteur réellement utilisé, ratio de vitesse).
 - **Sons de début et de fin** — un bip au démarrage de l'enregistrement, un autre quand le texte est prêt.
 - **Mute automatique** — coupe (en option) les sorties audio en cours pendant que vous parlez, puis les rétablit.
 - **Lancement au démarrage** — activable depuis les réglages (entrée d'autostart GNOME).
@@ -72,6 +78,7 @@ Tout transite par le dossier d'installation `~/.local/share/whisper-dictation/` 
 | `last.txt`      | Dernière transcription (affichée dans l'app)                 |
 | `recording.pid` | Présent = enregistrement en cours                            |
 | `daemon.sock`   | Socket Unix pour parler au daemon                            |
+| `timings.log`   | Journal de performance (une ligne par dictée, voir plus bas) |
 
 ## Prérequis
 
@@ -83,6 +90,10 @@ Outils système (à installer via votre gestionnaire de paquets) :
 - **Python 3** avec les bindings **GTK4 / libadwaita** (`python3-gi`, `gtk4`, `libadwaita`)
 
 Python : **`faster-whisper`** (installé dans le `venv`, voir `requirements.txt`).
+
+Recommandé : **`ffmpeg`** (paquet `ffmpeg`) — sert à compresser l'audio en Opus
+avant l'envoi au cloud Groq (uploads ~15× plus légers, transcription des longues
+dictées plus rapide et fiable). En son absence, l'audio est envoyé en WAV brut.
 
 Optionnel : [**Ollama**](https://ollama.com) avec le modèle `qwen3.5:4b` pour les
 modes *Propre* et *Prompt* (`ollama pull qwen3.5:4b`).
@@ -135,8 +146,34 @@ personnalisé dans **Paramètres GNOME → Clavier → Raccourcis personnalisés
 | **Propre** | oui | Corrige fautes + mots manifestement mal transcrits d'après le contexte. |
 | **Prompt** | oui | Reformate la dictée en prompt clair et structuré pour une IA. |
 
-Les modes *Propre* et *Prompt* nécessitent Ollama. Les prompts système de chaque
-mode sont définis dans `config.json` (`modes.*.system`) et entièrement modifiables.
+Les modes *Propre* et *Prompt* nécessitent Ollama (ou le moteur IA cloud Groq). Les
+prompts système de chaque mode sont définis dans `config.json` (`modes.*.system`) et
+entièrement modifiables.
+
+## Cloud (Groq) — optionnel mais rapide
+
+Par défaut, tout tourne **en local** (faster-whisper + Ollama). Vous pouvez, au choix,
+déléguer la transcription et/ou la correction IA à [**Groq**](https://groq.com), bien
+plus rapide : la dictée est prête en **~1-2 s** au lieu de dizaines de secondes en local.
+
+- **Transcription** — `transcribe_backend: "groq"` utilise `whisper-large-v3-turbo`.
+- **Correction IA** — `llm_backend: "groq"` utilise `llama-3.1-8b-instant`.
+
+Dans les deux cas, un échec du cloud (clé absente, réseau coupé, erreur serveur)
+provoque un **repli automatique** et silencieux vers le moteur local — vous obtenez
+toujours votre texte. Avant l'envoi, l'audio est compressé en Opus via `ffmpeg`
+(uploads ~15× plus légers) et les erreurs réseau transitoires sont réessayées.
+
+**Obtenir et configurer la clé :**
+
+1. Créez une clé gratuite sur [console.groq.com/keys](https://console.groq.com/keys).
+2. Renseignez-la dans **Réglages** de l'app, ou directement dans
+   `~/.local/share/whisper-dictation/config.json` (champ `groq_api_key`).
+
+> **Confidentialité** — la clé reste **locale** (dans `config.json`, jamais versionnée).
+> L'indice de contexte tiré du presse-papier n'est utilisé qu'**en local** : il n'est
+> **jamais** envoyé à Groq. Tant que les *backends* restent à `local`, rien ne sort de
+> votre machine.
 
 ## Configuration
 
@@ -151,6 +188,42 @@ Tout se règle ensuite depuis l'app (menu → **Réglages**) : moteur de transcr
 (local *small / medium / base*, ou cloud Groq), langue, modèle IA, sons, mute pendant
 la dictée, lancement au démarrage. La **clé API Groq** (optionnelle) se saisit dans les
 réglages et reste stockée localement dans `config.json` — elle n'est **pas** versionnée.
+
+### Clés principales de `config.json`
+
+| Clé                  | Rôle                                                                                          |
+|----------------------|-----------------------------------------------------------------------------------------------|
+| `model`              | Modèle faster-whisper local (`base` / `small` / `medium`…).                                   |
+| `language`           | Langue de la dictée (`fr` par défaut).                                                         |
+| `transcribe_backend` | Moteur de transcription : `local` (faster-whisper) ou `groq` (cloud).                          |
+| `llm_backend`        | Moteur de correction IA : `ollama` (local) ou `groq` (cloud).                                  |
+| `ollama_model`       | Modèle Ollama pour les modes *Propre* / *Prompt* (`qwen3.5:4b` par défaut).                    |
+| `groq_api_key`       | Clé API Groq (vide par défaut ; saisie localement, **jamais versionnée**).                     |
+| `groq_model`         | Modèle de transcription Groq (`whisper-large-v3-turbo`).                                       |
+| `groq_llm_model`     | Modèle de correction IA Groq (`llama-3.1-8b-instant`).                                         |
+| `beam_size`          | Largeur de faisceau de la transcription locale ; `1` (défaut) = le plus rapide.               |
+| `context_injection`  | `true` : guide la transcription **locale** avec un indice de contexte (presse-papier / fenêtre). |
+| `vocabulary`         | Liste de jargon imposée au modèle via *hotwords* (biaise la transcription).                    |
+| `replacements`       | Table de remplacements littéraux appliqués après transcription (ex. `k8s` → `Kubernetes`).    |
+
+`vocabulary` et `replacements` sont entièrement modifiables : ajoutez-y vos propres
+termes techniques et corrections récurrentes.
+
+## Journal de performance
+
+Chaque dictée écrit une ligne dans
+`~/.local/share/whisper-dictation/timings.log`, pratique pour repérer ce qui ralentit
+(transcription locale lente, modèle IA lourd…) et comparer local vs cloud :
+
+```
+2026-06-24 14:32:10 | parle=8s texte=142c | transcription=1.4s ia=0.9s total=2.3s | moteur=groq/whisper-large-v3-turbo beam=1 ia=groq | vitesse=0.29x_du_temps_de_parole
+```
+
+On y lit, pour chaque dictée : l'horodatage, la durée de parole (`parle`), la
+longueur du texte (`texte`), le temps de transcription, le temps d'IA et le temps
+total, le **moteur réellement utilisé** (après repli éventuel), `beam_size`, le
+backend IA, et le ratio `vitesse` (total / temps de parole : plus c'est bas, mieux
+c'est).
 
 ## Développement
 

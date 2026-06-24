@@ -70,11 +70,16 @@ class ModelHolder:
                         self._model = None
 
 
-def transcribe(holder, wav, lang):
+def transcribe(holder, wav, lang, hotwords=None, initial_prompt=None, beam_size=5):
     model = holder.get()
     segments, _ = model.transcribe(
-        wav, language=(lang or None), vad_filter=True, beam_size=1,
+        wav, language=(lang or None), vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=500, speech_pad_ms=200,
+                            threshold=0.5),
+        beam_size=beam_size, best_of=beam_size,
         condition_on_previous_text=False, without_timestamps=True,
+        hotwords=(hotwords or None),
+        initial_prompt=(initial_prompt or None),
     )
     return "".join(seg.text for seg in segments).strip()
 
@@ -92,7 +97,12 @@ def handle(conn, holder):
             conn.sendall(json.dumps({"ok": True}).encode())
             os._exit(0)
         elif cmd == "transcribe":
-            text = transcribe(holder, req["wav"], req.get("lang", ""))
+            text = transcribe(
+                holder, req["wav"], req.get("lang", ""),
+                hotwords=req.get("hotwords"),
+                initial_prompt=req.get("initial_prompt"),
+                beam_size=int(req.get("beam_size", 5)),
+            )
             resp = {"text": text}
         else:
             resp = {"error": f"commande inconnue: {cmd}"}
