@@ -1,0 +1,28 @@
+# Environnement Python (régénérable)
+venv/
+
+# Modèles Whisper (lourds, ~2 Go, téléchargés à la demande)
+models/
+
+# Fichiers de runtime générés par l'app
+config.json
+recording.wav
+recording.pid
+*.sock
+state
+state.tmp
+last.txt
+muted_sinks.json
+*.log
+
+# Python
+__pycache__/
+*.pyc
+
+# Fichiers sauvegardés par link-dev.sh côté installation
+*.orig
+
+# Réglages d'éditeur / d'outils locaux
+.claude/
+.vscode/
+.idea/

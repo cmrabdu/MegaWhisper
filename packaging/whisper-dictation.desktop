@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Dictée vocale
+Name[en]=Voice Dictation
+Comment=Dictée vocale locale (Whisper + Ollama)
+Exec=/usr/bin/python3 /home/stelwey/.local/share/whisper-dictation/app.py
+Icon=org.stelwey.WhisperDictation
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=dictée;voix;whisper;transcription;micro;
+StartupNotify=true
