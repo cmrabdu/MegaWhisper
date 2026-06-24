@@ -31,6 +31,7 @@ STATEFILE = os.path.join(DIR, "state")
 MUTEFILE = os.path.join(DIR, "muted_sinks.json")
 SOUNDS = os.path.join(DIR, "sounds")
 TIMINGS = os.path.join(DIR, "timings.log")
+HISTORY = os.path.join(DIR, "history.jsonl")
 # Certaines API derrière Cloudflare (Groq) rejettent le User-Agent par défaut de
 # Python (« Python-urllib ») avec une erreur 403. On en envoie un explicite.
 USER_AGENT = "MegaWhisper/1.0"
@@ -49,11 +50,16 @@ def play_sound(name, block=False):
     if not os.path.exists(path):
         return
     try:
+        vol = max(0, min(100, int(cfg.get("sound_volume", 100))))
+    except Exception:
+        vol = 100
+    args = ["paplay", f"--volume={int(vol / 100 * 65536)}", path]
+    try:
         if block:
-            subprocess.run(["paplay", path], check=False)
+            subprocess.run(args, check=False)
         else:
-            subprocess.Popen(["paplay", path],
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
     except FileNotFoundError:
         pass
 
@@ -458,6 +464,21 @@ def to_clipboard(text):
     p.communicate(text.encode("utf-8"))
 
 
+def auto_paste(cfg):
+    """Colle le texte au curseur (Ctrl+V) si activé et si ydotool est disponible.
+    Surtout utile déclenché par un raccourci global (le focus reste sur ton appli)."""
+    if not cfg.get("auto_paste", False) or not shutil.which("ydotool"):
+        return
+    try:
+        time.sleep(0.12)  # laisser le presse-papier se mettre en place
+        # Ctrl+V via codes d'évènements Linux : LEFTCTRL=29, V=47
+        subprocess.run(["ydotool", "key", "29:1", "47:1", "47:0", "29:0"],
+                       check=False, timeout=5,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 # ---------- actions ----------
 def is_recording():
     return os.path.exists(PIDFILE)
@@ -502,6 +523,17 @@ def log_timing(cfg, used_backend, audio_s, text, t_transcribe, t_llm, t_total):
     try:
         with open(TIMINGS, "a") as f:
             f.write(line)
+    except Exception:
+        pass
+
+
+def append_history(text, mode_label, used_backend):
+    """Ajoute la dictée à l'historique (history.jsonl) : horodatage, mode, moteur, texte."""
+    try:
+        rec = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "mode": mode_label,
+               "backend": used_backend, "text": text}
+        with open(HISTORY, "a") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except Exception:
         pass
 
@@ -563,11 +595,13 @@ def stop_and_transcribe():
         t_llm = time.monotonic() - t_llm0
 
     to_clipboard(text)
+    auto_paste(cfg)
     try:
         with open(os.path.join(DIR, "last.txt"), "w") as f:
             f.write(text)
     except Exception:
         pass
+    append_history(text, mode.get("label", ""), used_backend)
     log_timing(cfg, used_backend, audio_s, text, t_transcribe, t_llm,
                time.monotonic() - t_start)
     set_state("done")

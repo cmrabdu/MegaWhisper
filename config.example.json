@@ -12,6 +12,8 @@
   "llm_backend": "ollama",
   "notifications": false,
   "sounds": true,
+  "sound_volume": 100,
+  "auto_paste": false,
   "mute_while_speaking": true,
   "current_mode": "propre",
   "beam_size": 1,

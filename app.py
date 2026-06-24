@@ -9,7 +9,10 @@ import json
 import os
 import socket
 import subprocess
+import threading
 import time
+import urllib.error
+import urllib.request
 
 import gi
 gi.require_version("Gtk", "4.0")
@@ -25,6 +28,7 @@ CONFIG = os.path.join(DIR, "config.json")
 PIDFILE = os.path.join(DIR, "recording.pid")
 LASTFILE = os.path.join(DIR, "last.txt")
 STATEFILE = os.path.join(DIR, "state")
+HISTORY = os.path.join(DIR, "history.jsonl")
 APP_ID = "org.stelwey.WhisperDictation"
 AUTOSTART = os.path.expanduser("~/.config/autostart/whisper-dictation.desktop")
 DESKTOP_SRC = os.path.expanduser(
@@ -115,6 +119,18 @@ def set_config_key(key, value):
     save_config(cfg)
 
 
+def _parse_replacements(text):
+    """« k8s=Kubernetes, git hub=GitHub » -> dict."""
+    reps = {}
+    for part in text.split(","):
+        if "=" in part:
+            k, v = part.split("=", 1)
+            k = k.strip()
+            if k:
+                reps[k] = v.strip()
+    return reps
+
+
 # ---------- moteur ----------
 def run_script(*args):
     try:
@@ -184,7 +200,7 @@ def restart_daemon():
 # ---------- fenêtre principale ----------
 class DictateWindow(Adw.ApplicationWindow):
     def __init__(self, app):
-        super().__init__(application=app, title="Dictée")
+        super().__init__(application=app, title="MegaWhisper")
         self.set_default_size(380, 600)
 
         self._syncing = False
@@ -200,6 +216,7 @@ class DictateWindow(Adw.ApplicationWindow):
 
         menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
         menu = Gio.Menu()
+        menu.append("Historique", "win.history")
         menu.append("Réglages", "win.prefs")
         menu.append("À propos", "win.about")
         menu_btn.set_menu_model(menu)
@@ -312,6 +329,7 @@ class DictateWindow(Adw.ApplicationWindow):
 
         # actions
         self._add_action("prefs", self.open_prefs)
+        self._add_action("history", self.open_history)
         self._add_action("about", self.open_about)
 
         self.refresh()
@@ -422,27 +440,27 @@ class DictateWindow(Adw.ApplicationWindow):
         win = Adw.PreferencesWindow(transient_for=self, modal=True)
         win.set_title("Réglages")
         win.set_search_enabled(False)
+        self._prefs_win = win
 
         page = Adw.PreferencesPage()
-        grp = Adw.PreferencesGroup(title="Transcription")
 
+        # --- Transcription ---
+        grp = Adw.PreferencesGroup(title="Transcription")
         engine_row = Adw.ComboRow(title="Moteur",
                                   subtitle="Où et comment la voix est transcrite")
         engine_labels = [
-            "Local · Équilibré (small)",
+            "Cloud · Groq (large-v3-turbo · rapide)",
             "Local · Précis (medium)",
+            "Local · Équilibré (small)",
             "Local · Rapide (base)",
-            "Cloud · Groq (large-v3, rapide + précis)",
         ]
-        # (backend, model) pour chaque entrée
-        engine_specs = [("local", "small"), ("local", "medium"),
-                        ("local", "base"), ("groq", None)]
+        engine_specs = [("groq", None), ("local", "medium"),
+                        ("local", "small"), ("local", "base")]
         engine_row.set_model(Gtk.StringList.new(engine_labels))
-        # sélection courante
         if cfg.get("transcribe_backend") == "groq":
-            cur_idx = 3
+            cur_idx = 0
         else:
-            cur_idx = {"small": 0, "medium": 1, "base": 2}.get(cfg.get("model", "small"), 0)
+            cur_idx = {"medium": 1, "small": 2, "base": 3}.get(cfg.get("model", "medium"), 1)
         engine_row.set_selected(cur_idx)
 
         def on_engine(row, _):
@@ -453,13 +471,6 @@ class DictateWindow(Adw.ApplicationWindow):
                 restart_daemon()
         engine_row.connect("notify::selected", on_engine)
         grp.add(engine_row)
-
-        groq_row = Adw.PasswordEntryRow(title="Clé API Groq (console.groq.com)")
-        groq_row.set_text(cfg.get("groq_api_key", ""))
-        groq_row.set_show_apply_button(True)
-        groq_row.connect("apply",
-                         lambda row: set_config_key("groq_api_key", row.get_text().strip()))
-        grp.add(groq_row)
 
         lang_row = Adw.ComboRow(title="Langue")
         lang_labels = ["Détection auto", "Français", "English"]
@@ -472,30 +483,81 @@ class DictateWindow(Adw.ApplicationWindow):
         grp.add(lang_row)
         page.add(grp)
 
+        # --- Cloud (Groq) ---
+        grp_groq = Adw.PreferencesGroup(
+            title="Cloud (Groq)",
+            description="Clé gratuite sur console.groq.com/keys — stockée localement, jamais partagée")
+        groq_row = Adw.PasswordEntryRow(title="Clé API Groq")
+        groq_row.set_text(cfg.get("groq_api_key", ""))
+        groq_row.set_show_apply_button(True)
+        groq_row.connect("apply",
+                         lambda row: set_config_key("groq_api_key", row.get_text().strip()))
+        grp_groq.add(groq_row)
+        test_row = Adw.ActionRow(title="Tester la clé",
+                                 subtitle="Vérifie la connexion à Groq")
+        test_btn = Gtk.Button(label="Tester", valign=Gtk.Align.CENTER)
+        test_btn.add_css_class("flat")
+        test_btn.connect("clicked",
+                         lambda _b: self._test_groq_key(groq_row.get_text().strip()))
+        test_row.add_suffix(test_btn)
+        test_row.set_activatable_widget(test_btn)
+        grp_groq.add(test_row)
+        page.add(grp_groq)
+
+        # --- IA (amélioration du texte) ---
         grp_ia = Adw.PreferencesGroup(
-            title="Amélioration du texte",
+            title="Amélioration du texte (IA)",
             description="Pour les modes Propre et Prompt")
-        llm_row = Adw.ComboRow(
-            title="Modèle IA",
-            subtitle="Qwen3.5 — corrige les mots mal transcrits d'après le contexte")
-        llm_labels = ["Qwen3.5 4B (recommandé · ~5s)"]
-        llm_codes = ["qwen3.5:4b"]
-        llm_row.set_model(Gtk.StringList.new(llm_labels))
-        cur_llm = cfg.get("ollama_model", "qwen3.5:4b")
-        llm_row.set_selected(llm_codes.index(cur_llm) if cur_llm in llm_codes else 0)
-        llm_row.connect("notify::selected",
-                        lambda row, _: set_config_key("ollama_model", llm_codes[row.get_selected()]))
-        grp_ia.add(llm_row)
+        ia_row = Adw.ComboRow(
+            title="Moteur IA",
+            subtitle="Groq = quasi instantané · Local = privé mais lent sur CPU")
+        ia_labels = ["Cloud · Groq (llama-3.1-8b · rapide)",
+                     "Local · Ollama (qwen3.5:4b)"]
+        ia_codes = ["groq", "ollama"]
+        ia_row.set_model(Gtk.StringList.new(ia_labels))
+        cur_ia = cfg.get("llm_backend", "ollama")
+        ia_row.set_selected(ia_codes.index(cur_ia) if cur_ia in ia_codes else 1)
+        ia_row.connect("notify::selected",
+                       lambda row, _: set_config_key("llm_backend", ia_codes[row.get_selected()]))
+        grp_ia.add(ia_row)
         page.add(grp_ia)
 
+        # --- Vocabulaire ---
+        grp_vocab = Adw.PreferencesGroup(
+            title="Vocabulaire",
+            description="Aide la reconnaissance de ton jargon technique")
+        vocab = cfg.get("vocabulary", [])
+        vocab_row = Adw.EntryRow(title="Mots-clés (séparés par des virgules)")
+        vocab_row.set_text(", ".join(vocab) if isinstance(vocab, list) else str(vocab))
+        vocab_row.set_show_apply_button(True)
+        vocab_row.connect("apply", lambda row: set_config_key(
+            "vocabulary", [t.strip() for t in row.get_text().split(",") if t.strip()]))
+        grp_vocab.add(vocab_row)
+        rep = cfg.get("replacements", {}) or {}
+        rep_row = Adw.EntryRow(title="Remplacements (k8s=Kubernetes, …)")
+        rep_row.set_text(", ".join(f"{k}={v}" for k, v in rep.items()))
+        rep_row.set_show_apply_button(True)
+        rep_row.connect("apply",
+                        lambda row: set_config_key("replacements", _parse_replacements(row.get_text())))
+        grp_vocab.add(rep_row)
+        page.add(grp_vocab)
+
+        # --- Pendant la dictée ---
         grp2 = Adw.PreferencesGroup(title="Pendant la dictée")
         sound_row = Adw.SwitchRow(
             title="Sons de début et de fin",
-            subtitle="Un bip quand ça démarre, un autre quand le texte est prêt")
+            subtitle="Un son quand ça démarre, un autre quand le texte est prêt")
         sound_row.set_active(cfg.get("sounds", True))
         sound_row.connect("notify::active",
                           lambda row, _: set_config_key("sounds", row.get_active()))
         grp2.add(sound_row)
+
+        vol_adj = Gtk.Adjustment(lower=0, upper=100, step_increment=5,
+                                 value=cfg.get("sound_volume", 100))
+        vol_row = Adw.SpinRow(title="Volume des sons", adjustment=vol_adj)
+        vol_adj.connect("value-changed",
+                        lambda a: set_config_key("sound_volume", int(a.get_value())))
+        grp2.add(vol_row)
 
         mute_row = Adw.SwitchRow(
             title="Couper le son pendant que je parle",
@@ -506,7 +568,25 @@ class DictateWindow(Adw.ApplicationWindow):
         grp2.add(mute_row)
         page.add(grp2)
 
+        # --- Intégration ---
         grp3 = Adw.PreferencesGroup(title="Intégration")
+        paste_row = Adw.SwitchRow(
+            title="Coller automatiquement au curseur",
+            subtitle="Nécessite ydotool + un raccourci global (sinon : copié dans le presse-papier)")
+        paste_row.set_active(cfg.get("auto_paste", False))
+        paste_row.connect("notify::active",
+                          lambda row, _: set_config_key("auto_paste", row.get_active()))
+        grp3.add(paste_row)
+
+        sc_row = Adw.ActionRow(title="Raccourci global Super + Z",
+                               subtitle="Dicter depuis n'importe quelle application")
+        sc_btn = Gtk.Button(label="Configurer", valign=Gtk.Align.CENTER)
+        sc_btn.add_css_class("flat")
+        sc_btn.connect("clicked", lambda _b: self._setup_shortcut())
+        sc_row.add_suffix(sc_btn)
+        sc_row.set_activatable_widget(sc_btn)
+        grp3.add(sc_row)
+
         auto_row = Adw.SwitchRow(title="Lancer au démarrage",
                                  subtitle="Ouvre l'app à l'ouverture de session")
         auto_row.set_active(os.path.exists(AUTOSTART))
@@ -518,12 +598,140 @@ class DictateWindow(Adw.ApplicationWindow):
         win.add(page)
         win.present()
 
+    def _toast_prefs(self, msg):
+        win = getattr(self, "_prefs_win", None)
+        if win is not None:
+            try:
+                win.add_toast(Adw.Toast.new(msg))
+            except Exception:
+                pass
+
+    def _test_groq_key(self, key):
+        if not key:
+            self._toast_prefs("Saisis d'abord une clé")
+            return
+        self._toast_prefs("Test en cours…")
+
+        def worker():
+            req = urllib.request.Request(
+                "https://api.groq.com/openai/v1/models",
+                headers={"Authorization": f"Bearer {key}",
+                         "User-Agent": "MegaWhisper/1.0"})
+            try:
+                urllib.request.urlopen(req, timeout=15).read()
+                msg = "Clé valide ✓"
+            except urllib.error.HTTPError as e:
+                msg = f"Clé refusée (HTTP {e.code})"
+            except Exception as e:
+                msg = f"Échec de connexion : {e}"
+            GLib.idle_add(self._toast_prefs, msg)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _setup_shortcut(self):
+        base = "org.gnome.settings-daemon.plugins.media-keys"
+        sub_schema = base + ".custom-keybinding"
+        path = ("/org/gnome/settings-daemon/plugins/media-keys/"
+                "custom-keybindings/megawhisper/")
+        try:
+            src = Gio.SettingsSchemaSource.get_default()
+            if src is None or src.lookup(base, True) is None \
+                    or src.lookup(sub_schema, True) is None:
+                self._toast_prefs("Raccourcis GNOME indisponibles — à configurer à la main")
+                return
+            media = Gio.Settings.new(base)
+            keys = list(media.get_strv("custom-keybindings"))
+            if path not in keys:
+                keys.append(path)
+                media.set_strv("custom-keybindings", keys)
+            sub = Gio.Settings.new_with_path(sub_schema, path)
+            sub.set_string("name", "Dictée vocale")
+            sub.set_string("command", SCRIPT + " toggle")
+            sub.set_string("binding", "<Super>z")
+            self._toast_prefs("Raccourci Super + Z configuré ✓")
+        except Exception as e:
+            self._toast_prefs(f"Échec : {e}")
+
+    def open_history(self):
+        win = Adw.Window(transient_for=self, modal=True)
+        win.set_title("Historique")
+        win.set_default_size(440, 580)
+        toasts = Adw.ToastOverlay()
+        tv = Adw.ToolbarView()
+        tv.add_top_bar(Adw.HeaderBar())
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        box.set_margin_top(10)
+        box.set_margin_bottom(14)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+        search = Gtk.SearchEntry()
+        search.set_placeholder_text("Rechercher dans l'historique…")
+        box.append(search)
+
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        listbox = Gtk.ListBox()
+        listbox.add_css_class("boxed-list")
+        listbox.set_selection_mode(Gtk.SelectionMode.NONE)
+        scroll.set_child(listbox)
+        box.append(scroll)
+        tv.set_content(box)
+        toasts.set_child(tv)
+        win.set_content(toasts)
+
+        entries = self._load_history()
+        rows = []
+        for e in entries:
+            txt = e.get("text", "")
+            preview = (txt[:90] + "…") if len(txt) > 90 else (txt or "(vide)")
+            row = Adw.ActionRow(title=preview)
+            row.set_subtitle(f'{e.get("ts", "")} · {e.get("mode", "")} · {e.get("backend", "")}')
+            copy = Gtk.Button(icon_name="edit-copy-symbolic", valign=Gtk.Align.CENTER)
+            copy.add_css_class("flat")
+            copy.set_tooltip_text("Copier")
+            copy.connect("clicked", lambda _b, t=txt: (
+                Gdk.Display.get_default().get_clipboard().set(t),
+                toasts.add_toast(Adw.Toast.new("Copié"))))
+            row.add_suffix(copy)
+            row.set_activatable_widget(copy)
+            listbox.append(row)
+            rows.append((txt.lower() + " " + e.get("mode", "").lower(), row))
+
+        if not entries:
+            listbox.append(Adw.ActionRow(title="Aucune dictée pour l'instant"))
+
+        def on_search(_e):
+            q = search.get_text().lower()
+            for hay, row in rows:
+                row.set_visible(q in hay)
+        search.connect("search-changed", on_search)
+
+        win.present()
+
+    def _load_history(self, limit=200):
+        out = []
+        try:
+            with open(HISTORY) as f:
+                lines = f.readlines()
+            for line in reversed(lines[-limit:]):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return out
+
     def set_autostart(self, enabled):
         try:
             if enabled:
                 os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
                 content = (
-                    "[Desktop Entry]\nType=Application\nName=Dictée vocale\n"
+                    "[Desktop Entry]\nType=Application\nName=MegaWhisper\n"
                     f"Exec=/usr/bin/python3 {os.path.join(DIR, 'app.py')}\n"
                     "Icon=org.stelwey.WhisperDictation\nTerminal=false\n"
                     "X-GNOME-Autostart-enabled=true\n")
@@ -537,9 +745,9 @@ class DictateWindow(Adw.ApplicationWindow):
 
     def open_about(self):
         about = Gtk.AboutDialog(transient_for=self, modal=True)
-        about.set_program_name("Dictée vocale")
-        about.set_version("2.0")
-        about.set_comments("Dictée vocale locale et privée\n(Whisper + Ollama)")
+        about.set_program_name("MegaWhisper")
+        about.set_version("3.0")
+        about.set_comments("Dictée vocale rapide et privée\n(Whisper + Ollama, ou Groq en option)")
         about.set_logo_icon_name("org.stelwey.WhisperDictation")
         about.present()
 
