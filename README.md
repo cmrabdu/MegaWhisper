@@ -1,9 +1,9 @@
-<h1 align="center">Dictée vocale</h1>
+<h1 align="center">MegaWhisper</h1>
 
 <p align="center">
-  Dictée vocale <strong>locale et privée</strong> pour Linux / GNOME — vous parlez, le texte arrive dans le presse-papier.
+  Dictée vocale <strong>rapide et privée</strong> pour Linux / GNOME — vous parlez, le texte arrive dans le presse-papier.
   <br>
-  <em>Local, private voice dictation for Linux / GNOME (Whisper + Ollama).</em>
+  <em>Fast, private voice dictation for Linux / GNOME — local Whisper + Ollama, optional Groq / Mistral cloud.</em>
 </p>
 
 <p align="center">
@@ -19,6 +19,11 @@ le texte. Le résultat atterrit directement dans le presse-papier. Interface GTK
 soignée et minimale. Tout fonctionne **hors-ligne** ; un moteur cloud (Groq) reste disponible
 en option, avec **repli automatique** vers le moteur local en cas d'échec.
 
+```
+ micro ──► arecord ──► Whisper (local / Groq / Mistral) ──► IA de correction (Ollama / Groq) ──► presse-papier
+                                                                                              └─► historique
+```
+
 ## Sommaire
 
 - [Fonctionnalités](#fonctionnalités)
@@ -29,7 +34,8 @@ en option, avec **repli automatique** vers le moteur local en cas d'échec.
 - [Les modes](#les-modes)
 - [Cloud (Groq) — optionnel mais rapide](#cloud-groq--optionnel-mais-rapide)
 - [Configuration](#configuration)
-- [Journal de performance](#journal-de-performance)
+- [Historique et journal de performance](#historique-et-journal-de-performance)
+- [Outils : transcrire un fichier audio](#outils--transcrire-un-fichier-audio)
 - [Développement](#développement)
 - [Licence](#licence)
 
@@ -43,7 +49,9 @@ en option, avec **repli automatique** vers le moteur local en cas d'échec.
 - **Vocabulaire & remplacements** — une liste de jargon (`vocabulary`) est imposée au modèle de transcription via *hotwords*, et une table de remplacements littéraux (`replacements`, ex. `k8s` → `Kubernetes`) est appliquée après transcription.
 - **Injection de contexte** — un court extrait du presse-papier (et le titre de la fenêtre active sous Sway / Hyprland) guide la transcription **en local uniquement** ; cet indice n'est **jamais** envoyé au cloud, par souci de confidentialité.
 - **Journal de performance** — chaque dictée écrit une ligne dans `timings.log` (durée de parole, temps de transcription, temps d'IA, total, moteur réellement utilisé, ratio de vitesse).
-- **Sons de début, de fin et de prêt** — trois tons doux de la même famille (générés par `sounds/generate.py`).
+- **Historique consultable** — chaque dictée (texte final **et** brut, mode, moteur) est ajoutée à `history.jsonl` ; l'app l'affiche avec une recherche (menu → **Historique**).
+- **Collage automatique (optionnel)** — avec `ydotool` et un raccourci global, le texte est collé directement au curseur (`Ctrl + V` simulé) ; sinon il reste dans le presse-papier.
+- **Sons de début, de fin et de prêt** — tons doux et discrets (générés par `sounds/generate.py`).
 - **Mute automatique** — coupe (en option) les sorties audio en cours pendant que vous parlez, puis les rétablit.
 - **Lancement au démarrage** — activable depuis les réglages ; l'app démarre alors **en arrière-plan, sans fenêtre** (`app.py --hidden`). La fenêtre ne s'ouvre que si on lance MegaWhisper depuis le menu.
 - **Daemon mémoire** — le modèle Whisper est gardé en RAM entre deux dictées puis déchargé après inactivité, pour éviter de recharger plusieurs centaines de Mo à chaque fois.
@@ -63,6 +71,9 @@ daemon.py     Garde le modèle Whisper en RAM (socket Unix) et le décharge
               après inactivité, pour ne pas le recharger à chaque dictée.
 ```
 
+`tools/` contient deux scripts indépendants pour transcrire un **fichier** audio
+existant en plusieurs passes (voir [plus bas](#outils--transcrire-un-fichier-audio)).
+
 `transcribe.py` est une version autonome et historique (transcription d'un fichier
 WAV en ligne de commande) ; elle n'est pas utilisée par le flux principal, qui
 passe par le daemon.
@@ -78,6 +89,7 @@ Tout transite par le dossier d'installation `~/.local/share/whisper-dictation/` 
 | `last.txt`      | Dernière transcription (affichée dans l'app)                 |
 | `recording.pid` | Présent = enregistrement en cours                            |
 | `daemon.sock`   | Socket Unix pour parler au daemon                            |
+| `history.jsonl` | Historique des dictées (texte final + brut, mode, moteur)    |
 | `timings.log`   | Journal de performance (une ligne par dictée, voir plus bas) |
 
 ## Prérequis
@@ -95,6 +107,8 @@ Recommandé : **`ffmpeg`** (paquet `ffmpeg`) — sert à compresser l'audio en O
 avant l'envoi au cloud Groq (uploads ~15× plus légers, transcription des longues
 dictées plus rapide et fiable). En son absence, l'audio est envoyé en WAV brut.
 
+Optionnel : **`ydotool`** (démon `ydotoold` actif) pour le collage automatique au curseur.
+
 Optionnel : [**Ollama**](https://ollama.com) avec le modèle `qwen3.5:4b` pour les
 modes *Propre* et *Prompt* (`ollama pull qwen3.5:4b`).
 
@@ -111,16 +125,16 @@ cd MegaWhisper
 Le script `install.sh` crée l'environnement virtuel et installe `faster-whisper`,
 relie le code à l'installation (`~/.local/share/whisper-dictation/`) via des liens
 symboliques, copie `config.example.json` vers `config.json` (sans écraser une config
-existante) et installe le lanceur `.desktop`. Lancez ensuite **Dictée vocale** depuis
+existante) et installe le lanceur `.desktop`. Lancez ensuite **MegaWhisper** depuis
 le menu des applications.
 
 ## Utilisation
 
-1. Ouvrez **Dictée vocale**.
+1. Ouvrez **MegaWhisper**.
 2. Touchez le bouton micro pour démarrer l'enregistrement, retouchez-le pour l'arrêter.
 3. Le texte est transcrit (puis amélioré selon le mode) et **copié dans le presse-papier** — il ne reste plus qu'à le coller (`Ctrl + V`).
 
-La dernière transcription est affichée dans l'app et recopiable d'un clic.
+La dernière transcription est affichée dans l'app et recopiable d'un clic ; les précédentes sont dans **Historique**.
 
 Le cœur est aussi pilotable en ligne de commande via `dictate.sh` :
 
@@ -220,14 +234,18 @@ réglages et reste stockée localement dans `config.json` — elle n'est **pas**
 `vocabulary` et `replacements` sont entièrement modifiables : ajoutez-y vos propres
 termes techniques et corrections récurrentes.
 
-## Journal de performance
+## Historique et journal de performance
 
-Chaque dictée écrit une ligne dans
+Le texte de chaque dictée est conservé dans
+`~/.local/share/whisper-dictation/history.jsonl` (une entrée JSON par ligne, jamais
+versionnée) et consultable depuis l'app.
+
+En parallèle, chaque dictée écrit une ligne dans
 `~/.local/share/whisper-dictation/timings.log`, pratique pour repérer ce qui ralentit
 (transcription locale lente, modèle IA lourd…) et comparer local vs cloud :
 
 ```
-2026-06-24 14:32:10 | parle=8s texte=142c | transcription=1.4s ia=0.9s total=2.3s | moteur=groq/whisper-large-v3-turbo beam=1 ia=groq | vitesse=0.29x_du_temps_de_parole
+2026-06-24 14:32:10 | parle=8s texte=142c | transcription=1.4s ia=0.9s total=2.3s | moteur=groq/whisper-large-v3 beam=1 ia=groq | vitesse=0.29x_du_temps_de_parole
 ```
 
 On y lit, pour chaque dictée : l'horodatage, la durée de parole (`parle`), la
@@ -235,6 +253,21 @@ longueur du texte (`texte`), le temps de transcription, le temps d'IA et le temp
 total, le **moteur réellement utilisé** (après repli éventuel), `beam_size`, le
 backend IA, et le ratio `vitesse` (total / temps de parole : plus c'est bas, mieux
 c'est).
+
+## Outils : transcrire un fichier audio
+
+Pour un enregistrement existant (note vocale longue, réunion…), `tools/` propose une
+transcription **multi-passes** via Groq : plusieurs passes indépendantes (modèles,
+découpages différents), alignées sur une grille temporelle, pour arbitrer là où elles
+divergent.
+
+```bash
+tools/transcrire-fichier.py --audio note.opus --model whisper-large-v3 --name passeA --out passes/
+tools/aligner-passes.py --fenetre 20 --out passes/aligne.txt A=passes/passeA.json B=passes/passeB.json
+```
+
+Mode d'emploi complet (préparation de l'audio avec `ffmpeg`, choix des passes,
+arbitrage) : [`tools/README.md`](tools/README.md).
 
 ## Développement
 
@@ -249,8 +282,8 @@ Une modification ici est donc active au prochain lancement de l'app.
 `link-dev.sh` remplace les fichiers de code de `~/.local/share/whisper-dictation/`
 par des liens symboliques vers ce dépôt (en sauvegardant l'original en `*.orig` la
 première fois). Les données lourdes ou privées ne sont **pas versionnées** (voir
-`.gitignore`) car régénérables : `venv/`, `models/`, `config.json`, `*.wav`, `state`,
-logs…
+`.gitignore`) car régénérables : `venv/`, `models/`, `config.json`, `history.jsonl`, `*.wav`,
+`state`, logs…
 
 ## Licence
 

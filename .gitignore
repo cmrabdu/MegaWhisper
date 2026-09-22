@@ -13,6 +13,7 @@ state
 state.tmp
 last.txt
 muted_sinks.json
+history.jsonl
 *.log
 
 # Python

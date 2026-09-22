@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Installation de « Dictée vocale » (Whisper + Ollama).
+# Installation de « MegaWhisper » (Whisper + Ollama).
 #
 # Met en place le dossier d'installation ~/.local/share/whisper-dictation/ :
 #   - crée un environnement virtuel Python et y installe faster-whisper ;
@@ -57,5 +57,5 @@ sed "s|Exec=.*|Exec=/usr/bin/python3 $APP/app.py|" "$DESKTOP_SRC" > "$DESKTOP_DS
 echo "→ Lanceur installé : $DESKTOP_DST"
 
 echo
-echo "Terminé. Lance « Dictée vocale » depuis le menu des applications."
+echo "Terminé. Lance « MegaWhisper » depuis le menu des applications."
 echo "Modes IA (Propre / Prompt) : installe Ollama puis « ollama pull qwen3.5:4b »."
