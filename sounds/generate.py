@@ -14,7 +14,7 @@ SR = 48000
 ICI = Path(__file__).parent
 
 # Fréquences (Hz)
-G5, C6, E6, G6 = 783.99, 1046.50, 1318.51, 1567.98
+G5, C6 = 783.99, 1046.50
 
 # Partiels du timbre : (rapport de fréquence, amplitude, facteur de décroissance)
 # Le 3,93 donne le « tic » de mailloche qui s'éteint très vite.
@@ -57,7 +57,7 @@ def reverb(x, delais, gain=0.22):
     return y
 
 
-def son(notes, duree, fondu=0.04):
+def son(notes, duree, fondu=0.04, crete=-6):
     """notes = [(début_s, fréquence, tau, volume)] -> tableau stéréo normalisé."""
     mono = np.zeros(int(duree * SR))
     for debut, f, tau, vol in notes:
@@ -71,8 +71,7 @@ def son(notes, duree, fondu=0.04):
     # Fondu de sortie pour éviter tout clic
     n = int(fondu * SR)
     st[-n:] *= np.linspace(1, 0, n)[:, None] ** 2
-    # Crête à -6 dBFS
-    return st / np.abs(st).max() * 10 ** (-6 / 20)
+    return st / np.abs(st).max() * 10 ** (crete / 20)
 
 
 def ecrire(nom, st):
@@ -89,9 +88,8 @@ SONS = {
     "start.wav": son([(0.0, G5, 0.07, 0.8), (0.065, C6, 0.08, 1.0)], 0.24),
     # Fin d'enregistrement : le miroir descendant do → sol
     "stop.wav": son([(0.0, C6, 0.06, 0.9), (0.06, G5, 0.07, 1.0)], 0.20),
-    # Texte prêt : tierce majeure do → mi, puis sol discret, résonance naturelle
-    "done.wav": son([(0.0, C6, 0.16, 0.9), (0.09, E6, 0.18, 0.8),
-                     (0.18, G6, 0.14, 0.35)], 0.55, fondu=0.12),
+    # Texte prêt : une seule note grave et discrète, juste « c'est bon »
+    "done.wav": son([(0.0, G5 / 2, 0.10, 1.0)], 0.32, fondu=0.10, crete=-10),
 }
 
 if __name__ == "__main__":
