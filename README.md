@@ -38,14 +38,14 @@ en option, avec **repli automatique** vers le moteur local en cas d'échec.
 - **Local et privé** — l'audio et la transcription restent sur votre machine ; rien n'est envoyé sur le réseau (sauf si vous activez explicitement le moteur cloud Groq).
 - **Trois modes** — *Brut* (texte tel quel), *Propre* (correction des fautes et des mots mal transcrits d'après le contexte) et *Prompt* (reformulation en prompt clair pour une IA).
 - **Whisper + Ollama** — transcription par faster-whisper, post-traitement optionnel par un modèle local via Ollama (`qwen3.5:4b` par défaut).
-- **Moteurs cloud Groq (optionnels, rapides)** — la transcription peut passer par Groq `whisper-large-v3-turbo` et la correction IA par Groq `llama-3.1-8b-instant` : la dictée est prête en ~1-2 s au lieu de dizaines de secondes en local. **Repli automatique** vers le local (faster-whisper + Ollama) si le cloud échoue ou que la clé manque. Réglé par `transcribe_backend` (`local` / `groq`) et `llm_backend` (`ollama` / `groq`).
+- **Moteurs cloud Groq (optionnels, rapides)** — la transcription peut passer par Groq `whisper-large-v3` (ou Mistral Voxtral) et la correction IA par Groq `qwen/qwen3.8-27b` : la dictée est prête en ~1-2 s au lieu de dizaines de secondes en local. **Repli automatique** vers le local (faster-whisper + Ollama) si le cloud échoue ou que la clé manque. Réglé par `transcribe_backend` (`local` / `groq` / `mistral`) et `llm_backend` (`ollama` / `groq`).
 - **Compression Opus avant l'envoi cloud** — l'audio est transcodé en Opus via `ffmpeg` avant l'upload (~15× plus léger), ce qui rend la transcription des longues dictées rapide et fiable. Repli sur le WAV brut si `ffmpeg` est absent ; réessais automatiques sur erreurs réseau transitoires.
 - **Vocabulaire & remplacements** — une liste de jargon (`vocabulary`) est imposée au modèle de transcription via *hotwords*, et une table de remplacements littéraux (`replacements`, ex. `k8s` → `Kubernetes`) est appliquée après transcription.
 - **Injection de contexte** — un court extrait du presse-papier (et le titre de la fenêtre active sous Sway / Hyprland) guide la transcription **en local uniquement** ; cet indice n'est **jamais** envoyé au cloud, par souci de confidentialité.
 - **Journal de performance** — chaque dictée écrit une ligne dans `timings.log` (durée de parole, temps de transcription, temps d'IA, total, moteur réellement utilisé, ratio de vitesse).
-- **Sons de début et de fin** — un bip au démarrage de l'enregistrement, un autre quand le texte est prêt.
+- **Sons de début, de fin et de prêt** — trois tons doux de la même famille (générés par `sounds/generate.py`).
 - **Mute automatique** — coupe (en option) les sorties audio en cours pendant que vous parlez, puis les rétablit.
-- **Lancement au démarrage** — activable depuis les réglages (entrée d'autostart GNOME).
+- **Lancement au démarrage** — activable depuis les réglages ; l'app démarre alors **en arrière-plan, sans fenêtre** (`app.py --hidden`). La fenêtre ne s'ouvre que si on lance MegaWhisper depuis le menu.
 - **Daemon mémoire** — le modèle Whisper est gardé en RAM entre deux dictées puis déchargé après inactivité, pour éviter de recharger plusieurs centaines de Mo à chaque fois.
 
 ## Architecture
@@ -156,8 +156,17 @@ Par défaut, tout tourne **en local** (faster-whisper + Ollama). Vous pouvez, au
 déléguer la transcription et/ou la correction IA à [**Groq**](https://groq.com), bien
 plus rapide : la dictée est prête en **~1-2 s** au lieu de dizaines de secondes en local.
 
-- **Transcription** — `transcribe_backend: "groq"` utilise `whisper-large-v3-turbo`.
-- **Correction IA** — `llm_backend: "groq"` utilise `llama-3.1-8b-instant`.
+- **Transcription** — `transcribe_backend: "groq"` utilise `whisper-large-v3`, plus
+  fidèle que `-turbo` en français (turbo saute parfois une phrase). Whisper ne reçoit
+  **pas** de prompt par défaut : mesuré sur de vraies dictées, un prompt de vocabulaire
+  lui fait sauter des phrases entières (`whisper_prompt: true` pour le réactiver).
+- **Transcription Mistral** — `transcribe_backend: "mistral"` utilise Voxtral
+  (`voxtral-mini-latest`), meilleurs scores publiés en français ; clé gratuite sur
+  [console.mistral.ai](https://console.mistral.ai) (`mistral_api_key`). Repli sur Groq puis local.
+- **Correction IA** — `llm_backend: "groq"` utilise `qwen/qwen3.8-27b`, qui corrige sans
+  reformuler ; il reçoit ton `vocabulary`, ce qui corrige « groc » → « Groq ».
+  Si un modèle est retiré par Groq, les suivants de la chaîne sont essayés
+  (`openai/gpt-oss-120b`, puis Ollama), et **un échec est toujours notifié**.
 
 Dans les deux cas, un échec du cloud (clé absente, réseau coupé, erreur serveur)
 provoque un **repli automatique** et silencieux vers le moteur local — vous obtenez
@@ -195,15 +204,17 @@ réglages et reste stockée localement dans `config.json` — elle n'est **pas**
 |----------------------|-----------------------------------------------------------------------------------------------|
 | `model`              | Modèle faster-whisper local (`base` / `small` / `medium`…).                                   |
 | `language`           | Langue de la dictée (`fr` par défaut).                                                         |
-| `transcribe_backend` | Moteur de transcription : `local` (faster-whisper) ou `groq` (cloud).                          |
+| `transcribe_backend` | Moteur de transcription : `local` (faster-whisper), `groq` ou `mistral` (cloud).              |
 | `llm_backend`        | Moteur de correction IA : `ollama` (local) ou `groq` (cloud).                                  |
 | `ollama_model`       | Modèle Ollama pour les modes *Propre* / *Prompt* (`qwen3.5:4b` par défaut).                    |
 | `groq_api_key`       | Clé API Groq (vide par défaut ; saisie localement, **jamais versionnée**).                     |
-| `groq_model`         | Modèle de transcription Groq (`whisper-large-v3-turbo`).                                       |
-| `groq_llm_model`     | Modèle de correction IA Groq (`llama-3.1-8b-instant`).                                         |
+| `groq_model`         | Modèle de transcription Groq (`whisper-large-v3`).                                             |
+| `groq_llm_model`     | Modèle de correction IA Groq (`qwen/qwen3.8-27b`).                                             |
+| `mistral_api_key`    | Clé API Mistral (Voxtral), optionnelle.                                                        |
+| `whisper_prompt`     | `true` : envoie le vocabulaire en prompt à Whisper cloud (déconseillé, voir plus haut).        |
 | `beam_size`          | Largeur de faisceau de la transcription locale ; `1` (défaut) = le plus rapide.               |
 | `context_injection`  | `true` : guide la transcription **locale** avec un indice de contexte (presse-papier / fenêtre). |
-| `vocabulary`         | Liste de jargon imposée au modèle via *hotwords* (biaise la transcription).                    |
+| `vocabulary`         | Jargon : *hotwords* en local, `context_bias` chez Mistral, et consigne de l'IA de correction.  |
 | `replacements`       | Table de remplacements littéraux appliqués après transcription (ex. `k8s` → `Kubernetes`).    |
 
 `vocabulary` et `replacements` sont entièrement modifiables : ajoutez-y vos propres

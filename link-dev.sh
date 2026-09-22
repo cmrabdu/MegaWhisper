@@ -13,7 +13,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HOME/.local/share/whisper-dictation"
 
-CODE_FILES=(app.py daemon.py dictate.py transcribe.py dictate.sh)
+CODE_FILES=(app.py daemon.py dictate.py transcribe.py dictate.sh sounds)
 
 echo "Dépôt : $REPO"
 echo "App   : $APP"
@@ -28,9 +28,15 @@ for f in "${CODE_FILES[@]}"; do
     continue
   fi
   # sauvegarde de l'ancien fichier réel, une seule fois
-  if [ -e "$target" ] && [ ! -L "$target" ] && [ ! -e "$target.orig" ]; then
-    cp -p "$target" "$target.orig"
-    echo "  ($f sauvegardé en $f.orig)"
+  if [ -e "$target" ] && [ ! -L "$target" ]; then
+    if [ -d "$target" ]; then
+      # dossier réel (ex. sounds/) : mis de côté, sinon ln le remplirait au lieu de le remplacer
+      rm -rf "$target.orig"; mv "$target" "$target.orig"
+      echo "  ($f/ mis de côté en $f.orig/)"
+    elif [ ! -e "$target.orig" ]; then
+      cp -p "$target" "$target.orig"
+      echo "  ($f sauvegardé en $f.orig)"
+    fi
   fi
   ln -sfn "$src" "$target"
   echo "→ $f lié vers le dépôt"

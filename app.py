@@ -9,6 +9,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -41,51 +42,71 @@ CSS = """
     border-radius: 999px;
     background: @accent_bg_color;
     color: @accent_fg_color;
-    box-shadow: 0 6px 20px alpha(@accent_bg_color, 0.45);
-    transition: box-shadow 250ms ease, background 250ms ease;
+    box-shadow: 0 8px 24px alpha(@accent_bg_color, 0.35);
+    transition: box-shadow 400ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                background 400ms cubic-bezier(0.2, 0.8, 0.2, 1),
+                transform 250ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .record-btn:hover {
-    box-shadow: 0 8px 26px alpha(@accent_bg_color, 0.60);
+    transform: scale(1.035);
+    box-shadow: 0 10px 30px alpha(@accent_bg_color, 0.50);
 }
+.record-btn:active { transform: scale(0.96); }
 .record-btn.recording {
     background: @destructive_bg_color;
     color: @destructive_fg_color;
-    box-shadow: 0 6px 20px alpha(@destructive_bg_color, 0.45);
-    animation: wd-pulse 1.7s ease-out infinite;
+    animation: wd-rings 2.4s cubic-bezier(0.2, 0.6, 0.3, 1) infinite;
 }
-@keyframes wd-pulse {
-    0%   { box-shadow: 0 0 0 0 alpha(@destructive_bg_color, 0.55); }
-    70%  { box-shadow: 0 0 0 22px alpha(@destructive_bg_color, 0); }
-    100% { box-shadow: 0 0 0 0 alpha(@destructive_bg_color, 0); }
+/* deux ondes qui s'éloignent, décalées : plus calme qu'un simple clignotement */
+@keyframes wd-rings {
+    0%   { box-shadow: 0 0 0 0 alpha(@destructive_bg_color, 0.45),
+                       0 0 0 0 alpha(@destructive_bg_color, 0.25); }
+    50%  { box-shadow: 0 0 0 16px alpha(@destructive_bg_color, 0),
+                       0 0 0 6px alpha(@destructive_bg_color, 0.18); }
+    100% { box-shadow: 0 0 0 16px alpha(@destructive_bg_color, 0),
+                       0 0 0 26px alpha(@destructive_bg_color, 0); }
 }
 .record-btn.busy {
     background: #e5a50a;
     color: #241c00;
-    box-shadow: 0 6px 20px alpha(#e5a50a, 0.45);
-    animation: wd-breathe 1.3s ease-in-out infinite;
+    box-shadow: 0 8px 24px alpha(#e5a50a, 0.35);
 }
 .record-btn.rewrite {
     background: #9141ac;
     color: #ffffff;
-    box-shadow: 0 6px 20px alpha(#9141ac, 0.45);
-    animation: wd-breathe 1.3s ease-in-out infinite;
+    box-shadow: 0 8px 24px alpha(#9141ac, 0.35);
+}
+/* icône qui tourne pendant le traitement, plutôt qu'un bouton qui clignote */
+.record-btn.busy image, .record-btn.rewrite image {
+    animation: wd-spin 1.1s linear infinite;
+}
+@keyframes wd-spin {
+    from { -gtk-icon-transform: rotate(0deg); }
+    to   { -gtk-icon-transform: rotate(360deg); }
 }
 .record-btn.done {
     background: #2ec27e;
     color: #ffffff;
-    box-shadow: 0 6px 20px alpha(#2ec27e, 0.45);
+    box-shadow: 0 8px 24px alpha(#2ec27e, 0.40);
+    animation: wd-pop 450ms cubic-bezier(0.2, 0.8, 0.2, 1.3);
+}
+@keyframes wd-pop {
+    0%   { transform: scale(0.92); }
+    60%  { transform: scale(1.06); }
+    100% { transform: scale(1); }
 }
 .record-btn.errstate {
     background: @destructive_bg_color;
     color: @destructive_fg_color;
+    animation: wd-shake 380ms ease-in-out;
 }
-@keyframes wd-breathe {
-    0%   { opacity: 1; }
-    50%  { opacity: 0.55; }
-    100% { opacity: 1; }
+@keyframes wd-shake {
+    0%, 100% { transform: translateX(0); }
+    25% { transform: translateX(-6px); }
+    75% { transform: translateX(6px); }
 }
 .status-title { font-size: 1.25rem; font-weight: 700; }
-.mode-seg button { padding: 8px 6px; }
+.mode-seg button { padding: 8px 6px; transition: background 200ms ease; }
 .mode-seg image { margin-bottom: 3px; }
 .transcript-card {
     background: @card_bg_color;
@@ -93,6 +114,11 @@ CSS = """
     padding: 14px 16px;
 }
 .transcript-text { font-size: 1.02rem; }
+.transcript-text.fresh { animation: wd-fade 500ms ease-out; }
+@keyframes wd-fade {
+    from { opacity: 0; }
+    to   { opacity: 1; }
+}
 .muted { opacity: 0.62; }
 """
 
@@ -431,8 +457,12 @@ class DictateWindow(Adw.ApplicationWindow):
 
         text = read_last()
         if text != self._last_seen:
+            first = self._last_seen is None
             self._last_seen = text
             self.last_lbl.set_text(text if text else "—")
+            if not first:  # fondu à l'arrivée d'une nouvelle dictée
+                self.last_lbl.remove_css_class("fresh")
+                GLib.timeout_add(30, lambda: (self.last_lbl.add_css_class("fresh"), False)[1])
 
     # ---------- réglages ----------
     def open_prefs(self):
@@ -449,24 +479,32 @@ class DictateWindow(Adw.ApplicationWindow):
         engine_row = Adw.ComboRow(title="Moteur",
                                   subtitle="Où et comment la voix est transcrite")
         engine_labels = [
-            "Cloud · Groq (large-v3-turbo · rapide)",
+            "Cloud · Mistral Voxtral (le plus précis en français)",
+            "Cloud · Groq large-v3 (précis)",
+            "Cloud · Groq large-v3-turbo (plus rapide)",
             "Local · Précis (medium)",
             "Local · Équilibré (small)",
             "Local · Rapide (base)",
         ]
-        engine_specs = [("groq", None), ("local", "medium"),
-                        ("local", "small"), ("local", "base")]
+        engine_specs = [("mistral", None),
+                        ("groq", "whisper-large-v3"), ("groq", "whisper-large-v3-turbo"),
+                        ("local", "medium"), ("local", "small"), ("local", "base")]
         engine_row.set_model(Gtk.StringList.new(engine_labels))
-        if cfg.get("transcribe_backend") == "groq":
+        backend_now = cfg.get("transcribe_backend", "local")
+        if backend_now == "mistral":
             cur_idx = 0
+        elif backend_now == "groq":
+            cur_idx = 2 if "turbo" in cfg.get("groq_model", "") else 1
         else:
-            cur_idx = {"medium": 1, "small": 2, "base": 3}.get(cfg.get("model", "medium"), 1)
+            cur_idx = {"medium": 3, "small": 4, "base": 5}.get(cfg.get("model", "medium"), 3)
         engine_row.set_selected(cur_idx)
 
         def on_engine(row, _):
             backend, model = engine_specs[row.get_selected()]
             set_config_key("transcribe_backend", backend)
-            if backend == "local":
+            if backend == "groq":
+                set_config_key("groq_model", model)
+            elif backend == "local":
                 set_config_key("model", model)
                 restart_daemon()
         engine_row.connect("notify::selected", on_engine)
@@ -498,11 +536,33 @@ class DictateWindow(Adw.ApplicationWindow):
         test_btn = Gtk.Button(label="Tester", valign=Gtk.Align.CENTER)
         test_btn.add_css_class("flat")
         test_btn.connect("clicked",
-                         lambda _b: self._test_groq_key(groq_row.get_text().strip()))
+                         lambda _b: self._test_key("https://api.groq.com/openai/v1/models",
+                                                   groq_row.get_text().strip()))
         test_row.add_suffix(test_btn)
         test_row.set_activatable_widget(test_btn)
         grp_groq.add(test_row)
         page.add(grp_groq)
+
+        grp_mistral = Adw.PreferencesGroup(
+            title="Cloud (Mistral)",
+            description="Voxtral : meilleure transcription du français. Clé gratuite sur "
+                        "console.mistral.ai (offre Experiment) — repli sur Groq si absente")
+        mistral_row = Adw.PasswordEntryRow(title="Clé API Mistral")
+        mistral_row.set_text(cfg.get("mistral_api_key", ""))
+        mistral_row.set_show_apply_button(True)
+        mistral_row.connect("apply",
+                            lambda row: set_config_key("mistral_api_key", row.get_text().strip()))
+        grp_mistral.add(mistral_row)
+        mtest_row = Adw.ActionRow(title="Tester la clé",
+                                  subtitle="Vérifie la connexion à Mistral")
+        mtest_btn = Gtk.Button(label="Tester", valign=Gtk.Align.CENTER)
+        mtest_btn.add_css_class("flat")
+        mtest_btn.connect("clicked", lambda _b: self._test_key(
+            "https://api.mistral.ai/v1/models", mistral_row.get_text().strip()))
+        mtest_row.add_suffix(mtest_btn)
+        mtest_row.set_activatable_widget(mtest_btn)
+        grp_mistral.add(mtest_row)
+        page.add(grp_mistral)
 
         # --- IA (amélioration du texte) ---
         grp_ia = Adw.PreferencesGroup(
@@ -511,14 +571,23 @@ class DictateWindow(Adw.ApplicationWindow):
         ia_row = Adw.ComboRow(
             title="Moteur IA",
             subtitle="Groq = quasi instantané · Local = privé mais lent sur CPU")
-        ia_labels = ["Cloud · Groq (llama-3.1-8b · rapide)",
-                     "Local · Ollama (qwen3.5:4b)"]
-        ia_codes = ["groq", "ollama"]
+        ia_labels = ["Cloud · Groq Qwen3.8 27B (fidèle · recommandé)",
+                     "Cloud · Groq gpt-oss-120b (reformule davantage)",
+                     "Local · Ollama (qwen3.5:4b · lent sur CPU)"]
+        ia_specs = [("groq", "qwen/qwen3.8-27b"), ("groq", "openai/gpt-oss-120b"),
+                    ("ollama", None)]
         ia_row.set_model(Gtk.StringList.new(ia_labels))
-        cur_ia = cfg.get("llm_backend", "ollama")
-        ia_row.set_selected(ia_codes.index(cur_ia) if cur_ia in ia_codes else 1)
-        ia_row.connect("notify::selected",
-                       lambda row, _: set_config_key("llm_backend", ia_codes[row.get_selected()]))
+        if cfg.get("llm_backend", "ollama") == "groq":
+            ia_row.set_selected(1 if "gpt-oss" in cfg.get("groq_llm_model", "") else 0)
+        else:
+            ia_row.set_selected(2)
+
+        def on_ia(row, _):
+            backend, model = ia_specs[row.get_selected()]
+            set_config_key("llm_backend", backend)
+            if model:
+                set_config_key("groq_llm_model", model)
+        ia_row.connect("notify::selected", on_ia)
         grp_ia.add(ia_row)
         page.add(grp_ia)
 
@@ -588,7 +657,7 @@ class DictateWindow(Adw.ApplicationWindow):
         grp3.add(sc_row)
 
         auto_row = Adw.SwitchRow(title="Lancer au démarrage",
-                                 subtitle="Ouvre l'app à l'ouverture de session")
+                                 subtitle="En arrière-plan, sans fenêtre — Super + Z reste prêt")
         auto_row.set_active(os.path.exists(AUTOSTART))
         auto_row.connect("notify::active",
                          lambda row, _: self.set_autostart(row.get_active()))
@@ -606,7 +675,7 @@ class DictateWindow(Adw.ApplicationWindow):
             except Exception:
                 pass
 
-    def _test_groq_key(self, key):
+    def _test_key(self, url, key):
         if not key:
             self._toast_prefs("Saisis d'abord une clé")
             return
@@ -614,7 +683,7 @@ class DictateWindow(Adw.ApplicationWindow):
 
         def worker():
             req = urllib.request.Request(
-                "https://api.groq.com/openai/v1/models",
+                url,
                 headers={"Authorization": f"Bearer {key}",
                          "User-Agent": "MegaWhisper/1.0"})
             try:
@@ -732,7 +801,7 @@ class DictateWindow(Adw.ApplicationWindow):
                 os.makedirs(os.path.dirname(AUTOSTART), exist_ok=True)
                 content = (
                     "[Desktop Entry]\nType=Application\nName=MegaWhisper\n"
-                    f"Exec=/usr/bin/python3 {os.path.join(DIR, 'app.py')}\n"
+                    f"Exec=/usr/bin/python3 {os.path.join(DIR, 'app.py')} --hidden\n"
                     "Icon=org.stelwey.WhisperDictation\nTerminal=false\n"
                     "X-GNOME-Autostart-enabled=true\n")
                 with open(AUTOSTART, "w") as f:
@@ -746,16 +815,37 @@ class DictateWindow(Adw.ApplicationWindow):
     def open_about(self):
         about = Gtk.AboutDialog(transient_for=self, modal=True)
         about.set_program_name("MegaWhisper")
-        about.set_version("3.0")
-        about.set_comments("Dictée vocale rapide et privée\n(Whisper + Ollama, ou Groq en option)")
+        about.set_version("4.0")
+        about.set_comments("Dictée vocale rapide et précise\n(Groq ou Mistral en cloud, Whisper + Ollama en local)")
         about.set_logo_icon_name("org.stelwey.WhisperDictation")
         about.present()
 
 
+def migrate_autostart():
+    """Les anciennes entrées d'autostart ouvraient la fenêtre à chaque session :
+    on les passe en --hidden."""
+    try:
+        with open(AUTOSTART) as f:
+            content = f.read()
+        if "--hidden" not in content:
+            content = "\n".join(
+                line + " --hidden" if line.startswith("Exec=") else line
+                for line in content.splitlines()) + "\n"
+            with open(AUTOSTART, "w") as f:
+                f.write(content)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        print("autostart:", e)
+
+
 class DictateApp(Adw.Application):
-    def __init__(self):
+    def __init__(self, hidden=False):
         super().__init__(application_id=APP_ID,
                          flags=Gio.ApplicationFlags.FLAGS_NONE)
+        # --hidden (autostart) : l'app tourne en arrière-plan sans fenêtre ;
+        # relancer MegaWhisper depuis le menu l'affiche.
+        self._start_hidden = hidden
 
     def do_startup(self):
         Adw.Application.do_startup(self)
@@ -764,9 +854,15 @@ class DictateApp(Adw.Application):
         Gtk.StyleContext.add_provider_for_display(
             Gdk.Display.get_default(), provider,
             Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
-        prewarm_daemon()
+        migrate_autostart()
+        if load_config().get("transcribe_backend", "local") == "local":
+            prewarm_daemon()  # inutile (et ~700 Mo de RAM) si la transcription est cloud
 
     def do_activate(self):
+        if self._start_hidden:
+            self._start_hidden = False
+            self.hold()  # rester en vie sans fenêtre
+            return
         win = self.props.active_window
         if not win:
             win = DictateWindow(self)
@@ -774,4 +870,5 @@ class DictateApp(Adw.Application):
 
 
 if __name__ == "__main__":
-    DictateApp().run(None)
+    hidden = "--hidden" in sys.argv[1:]
+    DictateApp(hidden=hidden).run([a for a in sys.argv if a != "--hidden"])
